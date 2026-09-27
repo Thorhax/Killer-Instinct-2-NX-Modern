@@ -1614,8 +1614,10 @@ drcbe_arm64::drcbe_arm64(drcuml_state &drcuml, device_t &device, drc_cache &cach
 
 	CodeHolder ch;
 #if defined(__SWITCH__)
-	ch.init(Environment::host(), uint64_t(osd_switch_get_rx_ptr(dst)));
+	uint8_t *rx_dst = (uint8_t *)osd_switch_get_rx_ptr(dst);
+	ch.init(Environment::host(), uint64_t(rx_dst));
 #else
+	uint8_t *rx_dst = dst;
 	ch.init(Environment::host(), uint64_t(dst));
 #endif
 
@@ -1632,7 +1634,7 @@ drcbe_arm64::drcbe_arm64(drcuml_state &drcuml, device_t &device, drc_cache &cach
 		a.add_diagnostic_options(DiagnosticOptions::kValidateIntermediate);
 
 	// generate entry point
-	m_entry = (arm64_entry_point_func)dst;
+	m_entry = (arm64_entry_point_func)rx_dst;
 	a.bind(a.new_named_label("entry_point"));
 
 	FuncDetail entry_point;
@@ -1667,7 +1669,7 @@ drcbe_arm64::drcbe_arm64(drcuml_state &drcuml, device_t &device, drc_cache &cach
 	a.blr(REG_PARAM1);
 
 	// generate exit point
-	m_exit = dst + a.offset();
+	m_exit = rx_dst + a.offset();
 	a.bind(a.new_named_label("exit_point"));
 
 	Label const skip = a.new_label();
@@ -1683,12 +1685,12 @@ drcbe_arm64::drcbe_arm64(drcuml_state &drcuml, device_t &device, drc_cache &cach
 	a.ret(a64::x30);
 
 	// generate a no code point
-	m_nocode = dst + a.offset();
+	m_nocode = rx_dst + a.offset();
 	a.bind(a.new_named_label("nocode_point"));
 	a.br(REG_PARAM1);
 
 	// generate an end-of-block handler point
-	m_endofblock = dst + a.offset();
+	m_endofblock = rx_dst + a.offset();
 	a.bind(a.new_named_label("end_of_block_point"));
 	auto const [entrypoint, adjusted] = util::resolve_member_function(&drcbe_arm64::end_of_block, *this);
 	get_imm_relative(a, REG_PARAM1, adjusted);
