@@ -1613,7 +1613,11 @@ drcbe_arm64::drcbe_arm64(drcuml_state &drcuml, device_t &device, drc_cache &cach
 	uint8_t *dst = (uint8_t *)m_cache.top();
 
 	CodeHolder ch;
+#if defined(__SWITCH__)
+	ch.init(Environment::host(), uint64_t(osd_switch_get_rx_ptr(dst)));
+#else
 	ch.init(Environment::host(), uint64_t(dst));
+#endif
 
 	FileLogger logger(m_log_asmjit);
 	if (logger.file())
@@ -1705,7 +1709,11 @@ drcbe_arm64::~drcbe_arm64()
 
 size_t drcbe_arm64::emit(CodeHolder &ch, bool invariant)
 {
+#if defined(__SWITCH__)
+	size_t const alignment = uint64_t(osd_switch_get_rw_ptr((void*)ch.base_address())) - uint64_t(m_cache.top());
+#else
 	size_t const alignment = ch.base_address() - uint64_t(m_cache.top());
+#endif
 	size_t const code_size = ch.code_size();
 
 	// try to allocate space from the DRC cache
@@ -1715,12 +1723,17 @@ size_t drcbe_arm64::emit(CodeHolder &ch, bool invariant)
 	if (!space)
 		return 0;
 
+	uint8_t *target = (uint8_t *)space + alignment;
+#if defined(__SWITCH__)
+	assert(uintptr_t(space) <= uint64_t(osd_switch_get_rw_ptr((void*)ch.base_address())));
+#else
 	assert(uintptr_t(space) <= ch.base_address());
-	Error const err = ch.copy_flattened_data(drccodeptr(ch.base_address()), code_size, CopySectionFlags::kPadTargetBuffer);
+#endif
+	Error const err = ch.copy_flattened_data(drccodeptr(target), code_size, CopySectionFlags::kPadTargetBuffer);
 	if (err != kErrorOk)
 		throw emu_fatalerror("CodeHolder::copy_flattened_data() error %u", std::underlying_type_t<Error>(err));
 
-	osd::invalidate_instruction_cache(drccodeptr(ch.base_address()), code_size);
+	osd::invalidate_instruction_cache(drccodeptr(target), code_size);
 
 	return code_size;
 }
@@ -1772,7 +1785,11 @@ void drcbe_arm64::generate(drcuml_block &block, const instruction *instlist, uin
 	uint8_t *dst = (uint8_t *)(uint64_t(m_cache.top() + linemask) & ~linemask);
 
 	CodeHolder ch;
+#if defined(__SWITCH__)
+	ch.init(Environment::host(), uint64_t(osd_switch_get_rx_ptr(dst)));
+#else
 	ch.init(Environment::host(), uint64_t(dst));
+#endif
 	ThrowableErrorHandler e;
 	ch.set_error_handler(&e);
 

@@ -77,6 +77,11 @@ std::string osd_get_clipboard_text() noexcept;
 std::error_condition osd_set_clipboard_text(std::string_view text) noexcept;
 
 
+#if defined(__SWITCH__)
+void *osd_switch_get_rx_ptr(void *ptr) noexcept;
+void *osd_switch_get_rw_ptr(void *ptr) noexcept;
+#endif
+
 namespace osd {
 
 bool invalidate_instruction_cache(void const *start, std::size_t size) noexcept;

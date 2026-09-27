@@ -388,6 +388,7 @@ private:
 	std::error_condition create_common();
 	std::error_condition open_common(bool writeable, const open_parent_func &open_parent);
 	void create_open_common();
+	std::error_condition read_hunk_internal(uint32_t hunknum, void *buffer);
 	std::error_condition verify_proper_compression_append(uint32_t hunknum) const noexcept;
 	void hunk_write_compressed(uint32_t hunknum, int8_t compression, const uint8_t *compressed, uint32_t complength, util::crc16_t crc16);
 	void hunk_copy_from_self(uint32_t hunknum, uint32_t otherhunk);
@@ -433,6 +434,14 @@ private:
 	// caching
 	std::vector<uint8_t>    m_cache;            // single-hunk cache for partial reads/writes
 	uint32_t                m_cachehunk;        // which hunk is in the cache?
+
+	struct hunk_cache_entry
+	{
+		uint32_t            m_hunknum = ~0;
+		std::vector<uint8_t> m_data;
+	};
+	std::vector<hunk_cache_entry> m_hunk_cache;
+	uint32_t                m_hunk_cache_mask = 0;
 };
 
 

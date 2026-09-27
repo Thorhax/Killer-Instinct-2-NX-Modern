@@ -241,6 +241,97 @@ int osd_getpid() noexcept
 }
 
 
+#if defined(__SWITCH__)
+struct switch_drc_allocation {
+	void *rx_addr = nullptr;
+	void *rw_addr = nullptr;
+	void *src_addr = nullptr;
+	size_t size = 0;
+	size_t near_size = 0;
+	size_t boundary = 0; // split point between RX [near_size, boundary) and RW [boundary, size)
+	VirtmemReservation *rv = nullptr;
+	bool has_dual_map = false;
+	Jit jit = {};
+	uint32_t num_changes = 0;
+	uint64_t total_ticks = 0;
+};
+
+std::mutex s_drc_mutex;
+std::vector<switch_drc_allocation> s_drc_allocations;
+static switch_drc_allocation *s_active_dual_drc = nullptr;
+
+void *osd_switch_get_rx_ptr(void *ptr) noexcept
+{
+	if (!ptr) return nullptr;
+	if (s_active_dual_drc && ptr >= s_active_dual_drc->rw_addr && (char*)ptr < (char*)s_active_dual_drc->rw_addr + s_active_dual_drc->size)
+	{
+		return (char*)s_active_dual_drc->rx_addr + ((char*)ptr - (char*)s_active_dual_drc->rw_addr);
+	}
+	if (s_active_dual_drc && ptr >= s_active_dual_drc->rx_addr && (char*)ptr < (char*)s_active_dual_drc->rx_addr + s_active_dual_drc->size)
+	{
+		return ptr;
+	}
+	return ptr;
+}
+
+void *osd_switch_get_rw_ptr(void *ptr) noexcept
+{
+	if (!ptr) return nullptr;
+	if (s_active_dual_drc && ptr >= s_active_dual_drc->rx_addr && (char*)ptr < (char*)s_active_dual_drc->rx_addr + s_active_dual_drc->size)
+	{
+		return (char*)s_active_dual_drc->rw_addr + ((char*)ptr - (char*)s_active_dual_drc->rx_addr);
+	}
+	if (s_active_dual_drc && ptr >= s_active_dual_drc->rw_addr && (char*)ptr < (char*)s_active_dual_drc->rw_addr + s_active_dual_drc->size)
+	{
+		return ptr;
+	}
+	return ptr;
+}
+
+static bool switch_map_code_chunk(switch_drc_allocation *alloc, size_t offset, size_t size, u32 perm)
+{
+	if (size == 0)
+		return true;
+	Handle proc = envGetOwnProcessHandle();
+	u64 dst = (u64)alloc->rx_addr + offset;
+	u64 s = (u64)alloc->src_addr + offset;
+
+	Result rc = svcMapProcessCodeMemory(proc, dst, s, size);
+	if (R_FAILED(rc))
+	{
+		printf("switch: svcMapProcessCodeMemory(+0x%lx, 0x%lx) rc=0x%08x\n", (unsigned long)offset, (unsigned long)size, rc);
+		return false;
+	}
+
+	rc = svcSetProcessMemoryPermission(proc, dst, size, perm);
+	if (R_FAILED(rc))
+	{
+		printf("switch: svcSetProcessMemoryPermission(+0x%lx, 0x%lx, perm=%u) rc=0x%08x\n", (unsigned long)offset, (unsigned long)size, (unsigned)perm, rc);
+		svcUnmapProcessCodeMemory(proc, dst, s, size);
+		return false;
+	}
+	return true;
+}
+
+static bool switch_unmap_code_chunk(switch_drc_allocation *alloc, size_t offset, size_t size)
+{
+	if (size == 0)
+		return true;
+	Handle proc = envGetOwnProcessHandle();
+	u64 dst = (u64)alloc->rx_addr + offset;
+	u64 s = (u64)alloc->src_addr + offset;
+
+	Result rc = svcUnmapProcessCodeMemory(proc, dst, s, size);
+	if (R_FAILED(rc))
+	{
+		printf("switch: svcUnmapProcessCodeMemory(+0x%lx, 0x%lx) rc=0x%08x\n", (unsigned long)offset, (unsigned long)size, rc);
+		return false;
+	}
+	return true;
+}
+#endif
+
+
 namespace osd {
 
 namespace {
@@ -317,72 +408,16 @@ private:
 };
 #endif
 
-#if defined(__SWITCH__)
-struct switch_drc_allocation {
-	void *rx_addr = nullptr;
-	void *src_addr = nullptr;
-	size_t size = 0;
-	size_t near_size = 0;
-	size_t boundary = 0; // split point between RX [near_size, boundary) and RW [boundary, size)
-	VirtmemReservation *rv = nullptr;
-	uint32_t num_changes = 0;
-	uint64_t total_ticks = 0;
-};
-
-std::mutex s_drc_mutex;
-std::vector<switch_drc_allocation> s_drc_allocations;
-
-bool switch_map_code_chunk(switch_drc_allocation *alloc, size_t offset, size_t size, u32 perm)
-{
-	if (size == 0)
-		return true;
-	Handle proc = envGetOwnProcessHandle();
-	u64 dst = (u64)alloc->rx_addr + offset;
-	u64 s = (u64)alloc->src_addr + offset;
-
-	Result rc = svcMapProcessCodeMemory(proc, dst, s, size);
-	if (R_FAILED(rc))
-	{
-		printf("switch: svcMapProcessCodeMemory(+0x%lx, 0x%lx) rc=0x%08x\n", (unsigned long)offset, (unsigned long)size, rc);
-		return false;
-	}
-
-	rc = svcSetProcessMemoryPermission(proc, dst, size, perm);
-	if (R_FAILED(rc))
-	{
-		printf("switch: svcSetProcessMemoryPermission(+0x%lx, 0x%lx, perm=%u) rc=0x%08x\n", (unsigned long)offset, (unsigned long)size, (unsigned)perm, rc);
-		svcUnmapProcessCodeMemory(proc, dst, s, size);
-		return false;
-	}
-	return true;
-}
-
-bool switch_unmap_code_chunk(switch_drc_allocation *alloc, size_t offset, size_t size)
-{
-	if (size == 0)
-		return true;
-	Handle proc = envGetOwnProcessHandle();
-	u64 dst = (u64)alloc->rx_addr + offset;
-	u64 s = (u64)alloc->src_addr + offset;
-
-	Result rc = svcUnmapProcessCodeMemory(proc, dst, s, size);
-	if (R_FAILED(rc))
-	{
-		printf("switch: svcUnmapProcessCodeMemory(+0x%lx, 0x%lx) rc=0x%08x\n", (unsigned long)offset, (unsigned long)size, rc);
-		return false;
-	}
-	return true;
-}
-#endif
-
 } // anonymous namespace
 
 
 bool invalidate_instruction_cache(void const *start, std::size_t size) noexcept
 {
 #if defined(__SWITCH__)
-	armDCacheFlush(const_cast<void *>(start), size);
-	armICacheInvalidate(const_cast<void *>(start), size);
+	void *rw = osd_switch_get_rw_ptr(const_cast<void *>(start));
+	void *rx = osd_switch_get_rx_ptr(const_cast<void *>(start));
+	armDCacheFlush(rw, size);
+	armICacheInvalidate(rx, size);
 #elif !defined(SDLMAME_EMSCRIPTEN)
 	char const *const begin(reinterpret_cast<char const *>(start));
 	char const *const end(begin + size);
@@ -415,7 +450,49 @@ void *virtual_memory_allocation::do_alloc(std::initializer_list<std::size_t> blo
 		return result;
 	}
 
-	// DRC executable memory allocation
+	size_t near_size = 0;
+	if (blocks.size() > 0)
+	{
+		near_size = (*blocks.begin() + p - 1) / p * p;
+	}
+
+	// First try modern Switch dual-mapping JIT (Atmosphere / HOS 4.0.0+)
+	if (envIsSyscallHinted(0x4B) && envIsSyscallHinted(0x4C))
+	{
+		switch_drc_allocation alloc;
+		alloc.size = s;
+		alloc.near_size = near_size;
+
+		Result rc = jitCreate(&alloc.jit, s);
+		if (R_SUCCEEDED(rc) && alloc.jit.type == JitType_CodeMemory)
+		{
+			alloc.rx_addr = jitGetRxAddr(&alloc.jit);
+			alloc.rw_addr = jitGetRwAddr(&alloc.jit);
+			alloc.has_dual_map = true;
+			alloc.boundary = s;
+
+			std::memset(alloc.rw_addr, 0, s);
+
+			{
+				std::lock_guard<std::mutex> guard(s_drc_mutex);
+				s_drc_allocations.push_back(alloc);
+				s_active_dual_drc = &s_drc_allocations.back();
+			}
+
+			printf("switch: JIT dual-mapping allocated: rx=%p, rw=%p, size=0x%lx, near_size=0x%lx\n",
+				alloc.rx_addr, alloc.rw_addr, (unsigned long)s, (unsigned long)near_size);
+
+			size = s;
+			page_size = p;
+			return alloc.rw_addr;
+		}
+		else if (R_SUCCEEDED(rc))
+		{
+			jitClose(&alloc.jit);
+		}
+	}
+
+	// Fallback path: code memory syscalls 0x73/0x77/0x78
 	if (!envIsSyscallHinted(0x73) || !envIsSyscallHinted(0x77) || !envIsSyscallHinted(0x78))
 	{
 		printf("switch: Code memory syscalls 0x73/0x77/0x78 not hinted!\n");
@@ -442,18 +519,14 @@ void *virtual_memory_allocation::do_alloc(std::initializer_list<std::size_t> blo
 		return nullptr;
 	}
 
-	size_t near_size = 0;
-	if (blocks.size() > 0)
-	{
-		near_size = (*blocks.begin() + p - 1) / p * p;
-	}
-
 	switch_drc_allocation alloc;
 	alloc.rx_addr = rx;
+	alloc.rw_addr = rx;
 	alloc.src_addr = src;
 	alloc.size = s;
 	alloc.near_size = near_size;
 	alloc.rv = rv;
+	alloc.has_dual_map = false;
 	alloc.num_changes = 0;
 	alloc.total_ticks = 0;
 
@@ -487,7 +560,7 @@ void *virtual_memory_allocation::do_alloc(std::initializer_list<std::size_t> blo
 		s_drc_allocations.push_back(alloc);
 	}
 
-	printf("switch: DRC cache allocated: rx=%p, src=%p, size=0x%lx, near_size=0x%lx\n", rx, src, (unsigned long)s, (unsigned long)near_size);
+	printf("switch: DRC cache allocated (fallback W^X): rx=%p, src=%p, size=0x%lx, near_size=0x%lx\n", rx, src, (unsigned long)s, (unsigned long)near_size);
 
 	size = s;
 	page_size = p;
@@ -527,28 +600,41 @@ void virtual_memory_allocation::do_free(void *start, std::size_t size) noexcept
 		std::lock_guard<std::mutex> guard(s_drc_mutex);
 		for (auto it = s_drc_allocations.begin(); it != s_drc_allocations.end(); ++it)
 		{
-			if (it->rx_addr == start)
+			if (it->rx_addr == start || it->rw_addr == start)
 			{
-				if (it->near_size > 0)
-				{
-					switch_unmap_code_chunk(&*it, 0, it->near_size);
-				}
-				if (it->boundary > it->near_size)
-				{
-					switch_unmap_code_chunk(&*it, it->near_size, it->boundary - it->near_size);
-				}
-				if (it->size > it->boundary)
-				{
-					switch_unmap_code_chunk(&*it, it->boundary, it->size - it->boundary);
-				}
+				if (s_active_dual_drc == &(*it))
+					s_active_dual_drc = nullptr;
 
-				virtmemLock();
-				virtmemRemoveReservation(it->rv);
-				virtmemUnlock();
-				free(it->src_addr);
-				s_drc_allocations.erase(it);
-				printf("switch: DRC cache freed (%p)\n", start);
-				return;
+				if (it->has_dual_map)
+				{
+					jitClose(&it->jit);
+					s_drc_allocations.erase(it);
+					printf("switch: JIT dual-mapping freed (%p)\n", start);
+					return;
+				}
+				else
+				{
+					if (it->near_size > 0)
+					{
+						switch_unmap_code_chunk(&*it, 0, it->near_size);
+					}
+					if (it->boundary > it->near_size)
+					{
+						switch_unmap_code_chunk(&*it, it->near_size, it->boundary - it->near_size);
+					}
+					if (it->size > it->boundary)
+					{
+						switch_unmap_code_chunk(&*it, it->boundary, it->size - it->boundary);
+					}
+
+					virtmemLock();
+					virtmemRemoveReservation(it->rv);
+					virtmemUnlock();
+					free(it->src_addr);
+					s_drc_allocations.erase(it);
+					printf("switch: DRC cache freed (%p)\n", start);
+					return;
+				}
 			}
 		}
 	}
@@ -561,17 +647,12 @@ void virtual_memory_allocation::do_free(void *start, std::size_t size) noexcept
 bool virtual_memory_allocation::do_set_access(void *start, std::size_t size, unsigned access) noexcept
 {
 #if defined(__SWITCH__)
-	// Horizon OS strictly prohibits RWX pages. Return false to force MAME DRC to use W^X mode.
-	if ((access & (WRITE | EXECUTE)) == (WRITE | EXECUTE))
-	{
-		return false;
-	}
-
 	std::lock_guard<std::mutex> guard(s_drc_mutex);
 	switch_drc_allocation *found = nullptr;
 	for (auto &a : s_drc_allocations)
 	{
-		if (start >= a.rx_addr && (char*)start < (char*)a.rx_addr + a.size)
+		if ((start >= a.rx_addr && (char*)start < (char*)a.rx_addr + a.size) ||
+		    (start >= a.rw_addr && (char*)start < (char*)a.rw_addr + a.size))
 		{
 			found = &a;
 			break;
@@ -581,6 +662,18 @@ bool virtual_memory_allocation::do_set_access(void *start, std::size_t size, uns
 	if (!found)
 	{
 		return true;
+	}
+
+	// Dual mapping is simultaneously writable at rw_addr and executable at rx_addr
+	if (found->has_dual_map)
+	{
+		return true;
+	}
+
+	// Horizon OS strictly prohibits RWX pages. Return false to force MAME DRC to use W^X mode.
+	if ((access & (WRITE | EXECUTE)) == (WRITE | EXECUTE))
+	{
+		return false;
 	}
 
 	size_t const offset = (char*)start - (char*)found->rx_addr;

@@ -890,6 +890,8 @@ void chd_file::close()
 	// reset caching
 	m_cache.clear();
 	m_cachehunk = ~0;
+	m_hunk_cache.clear();
+	m_hunk_cache_mask = 0;
 }
 
 std::error_condition chd_file::codec_process_hunk(uint32_t hunknum)
@@ -1024,6 +1026,30 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 	if (UNEXPECTED(hunknum >= m_hunkcount))
 		return std::error_condition(error::HUNK_OUT_OF_RANGE);
 
+	if (m_hunk_cache_mask != 0)
+	{
+		auto &entry = m_hunk_cache[hunknum & m_hunk_cache_mask];
+		if (entry.m_hunknum == hunknum && entry.m_data.size() == m_hunkbytes)
+		{
+			memcpy(buffer, entry.m_data.data(), m_hunkbytes);
+			return std::error_condition();
+		}
+	}
+
+	std::error_condition err = read_hunk_internal(hunknum, buffer);
+	if (!err && m_hunk_cache_mask != 0)
+	{
+		auto &entry = m_hunk_cache[hunknum & m_hunk_cache_mask];
+		entry.m_hunknum = hunknum;
+		if (entry.m_data.size() != m_hunkbytes)
+			entry.m_data.resize(m_hunkbytes);
+		memcpy(entry.m_data.data(), buffer, m_hunkbytes);
+	}
+	return err;
+}
+
+std::error_condition chd_file::read_hunk_internal(uint32_t hunknum, void *buffer)
+{
 	auto *const dest = reinterpret_cast<uint8_t *>(buffer);
 
 	// wrap this for clean reporting
@@ -1219,7 +1245,19 @@ std::error_condition chd_file::write_hunk(uint32_t hunknum, const void *buffer)
 
 		// if it's all zeros, do nothing more
 		if (all_zeros)
+		{
+			if (m_hunk_cache_mask != 0)
+			{
+				auto &entry = m_hunk_cache[hunknum & m_hunk_cache_mask];
+				if (entry.m_hunknum == hunknum)
+				{
+					if (entry.m_data.size() != m_hunkbytes)
+						entry.m_data.resize(m_hunkbytes);
+					std::memset(entry.m_data.data(), 0, m_hunkbytes);
+				}
+			}
 			return std::error_condition();
+		}
 
 		// wrap this for clean reporting
 		try
@@ -1243,12 +1281,39 @@ std::error_condition chd_file::write_hunk(uint32_t hunknum, const void *buffer)
 		if (hunknum == m_cachehunk && buffer != &m_cache[0])
 			memcpy(&m_cache[0], buffer, m_hunkbytes);
 
+		if (m_hunk_cache_mask != 0)
+		{
+			auto &entry = m_hunk_cache[hunknum & m_hunk_cache_mask];
+			if (entry.m_hunknum == hunknum)
+			{
+				if (entry.m_data.size() != m_hunkbytes)
+					entry.m_data.resize(m_hunkbytes);
+				memcpy(entry.m_data.data(), buffer, m_hunkbytes);
+			}
+		}
+
 		return std::error_condition();
 	}
 	else
 	{
 		// otherwise, just overwrite
-		return file_write(uint64_t(rawentry) * uint64_t(m_hunkbytes), buffer, m_hunkbytes);
+		std::error_condition err = file_write(uint64_t(rawentry) * uint64_t(m_hunkbytes), buffer, m_hunkbytes);
+		if (!err)
+		{
+			if (hunknum == m_cachehunk && buffer != &m_cache[0])
+				memcpy(&m_cache[0], buffer, m_hunkbytes);
+			if (m_hunk_cache_mask != 0)
+			{
+				auto &entry = m_hunk_cache[hunknum & m_hunk_cache_mask];
+				if (entry.m_hunknum == hunknum)
+				{
+					if (entry.m_data.size() != m_hunkbytes)
+						entry.m_data.resize(m_hunkbytes);
+					memcpy(entry.m_data.data(), buffer, m_hunkbytes);
+				}
+			}
+		}
+		return err;
 	}
 }
 
@@ -2651,6 +2716,34 @@ void chd_file::create_open_common()
 	// allocate the temporary compressed buffer and a buffer for caching
 	m_compressed.resize(m_hunkbytes);
 	m_cache.resize(m_hunkbytes);
+
+	if (m_hunkbytes > 0 && m_hunkcount > 0)
+	{
+		// Target up to 32MB of decompressed hunk cache in Switch RAM
+		uint32_t target_slots = (32 * 1024 * 1024) / m_hunkbytes;
+		if (target_slots > m_hunkcount)
+			target_slots = m_hunkcount;
+
+		uint32_t slots = 1;
+		while ((slots << 1) <= target_slots)
+			slots <<= 1;
+
+		if (slots >= 16)
+		{
+			m_hunk_cache.resize(slots);
+			for (auto &entry : m_hunk_cache)
+			{
+				entry.m_hunknum = ~0;
+				entry.m_data.resize(m_hunkbytes);
+			}
+			m_hunk_cache_mask = slots - 1;
+		}
+		else
+		{
+			m_hunk_cache.clear();
+			m_hunk_cache_mask = 0;
+		}
+	}
 }
 
 /**

@@ -88,8 +88,11 @@
 #define IS_FR0      (!(SR & SR_FR))
 #define IS_FR1      (SR & SR_FR)
 
-/* size of the execution code cache */
+#if defined(__SWITCH__)
+#define DRC_CACHE_SIZE              (96 * 1024 * 1024)
+#else
 #define DRC_CACHE_SIZE              (32 * 1024 * 1024)
+#endif
 
 
 
@@ -176,7 +179,11 @@ mips3_device::mips3_device(const machine_config &mconfig, device_type type, cons
 	, c_secondary_cache_line_size(0)
 	, m_fastram_select(0)
 	, m_debugger_temp(0)
+#if defined(__SWITCH__)
+	, m_drc_cache(DRC_CACHE_SIZE + sizeof(internal_mips3_state) + 0x2000000)
+#else
 	, m_drc_cache(DRC_CACHE_SIZE + sizeof(internal_mips3_state) + 0x800000)
+#endif
 	, m_drcuml(nullptr)
 	, m_drcfe(nullptr)
 	, m_drcoptions(0)
