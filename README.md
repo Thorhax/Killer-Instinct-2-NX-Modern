@@ -41,6 +41,25 @@ Controls are configured with dedicated **Punch (top)** and **Kick (bottom)** row
 
 ---
 
+## Required ROM & CHD Details
+
+This standalone port is based on **modern MAME (0.289)**. Ensure you are using the modern MAME dump of the game ROM archive and hard disk image:
+
+### 1. Main ROM Archive (`kinst.zip`)
+- **SD Path:** `sdmc:/switch/kinst/roms/kinst.zip`
+- **MAME Driver Set:** `kinst` (Killer Instinct parent set)
+- **Default BIOS Version:** `v1.5d` (`ki-l15d.u98` - CRC `7b65ca3d`, SHA-1 `607394d4ba1713f38c2cb5159303cace9cde991e`)
+- **Sound ROMs:** `u10-l1` through `u36-l1`
+- *(Alternate BIOS revisions like v1.4, v1.3, and proto v4.7 are also recognized if present in the zip).*
+
+### 2. Hard Disk Image (`kinst.chd`)
+- **SD Path:** `sdmc:/switch/kinst/roms/kinst/kinst.chd`
+- **Format:** Modern MAME CHD format (CHD v5)
+- **SHA-1 Checksum:** `81d833236e994528d1482979261401b198d1ca53`
+- **Subfolder Requirement:** MAME requires the hard disk image to be inside a subfolder matching the driver name (`kinst/`) directly inside `roms/`.
+
+---
+
 ## Installation
 
 1. Download the latest release from the [Releases](https://github.com/Thorhax/Killer-Instinct-NX-Modern/releases) page.
