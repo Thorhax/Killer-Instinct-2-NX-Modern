@@ -13,7 +13,7 @@ Standalone Nintendo Switch arcade port of **Killer Instinct** powered by modern 
 - **Native Switch Pad API:** Low-latency native libnx `pad` input handling.
 - **Multi-Core Scheduling:** Thread core mask enabled across all 3 available CPU cores (Cores 0, 1, and 2) for smooth emulation and audio synchronization.
 - **Clean Exit Architecture:** `Plus + Minus` saves settings/high scores and closes the game cleanly to the Switch HOME menu.
-- **Stutter-Free Disk Access:** The whole hard disk image is decompressed into RAM at boot, so FMVs, stage loads and streamed backgrounds never wait on the SD card.
+- **Stutter-Free Disk Access:** The whole hard disk image is decompressed into RAM in the background while the game boots, so FMVs, stage loads and streamed backgrounds never wait on the SD card.
 - **Stable Long Sessions:** GPU frame pacing keeps the display from falling behind during long play sessions.
 - **Intuitive Combat Controls:** Six-button arcade layout configured with dedicated Punch and Kick rows.
 - **Two-Player Parity:** Complete Player 1 and Player 2 support with mirrored bindings.
@@ -59,7 +59,7 @@ This standalone port is based on **modern MAME (0.289)**. Ensure you are using t
 - **Format:** Modern MAME CHD format (CHD v5)
 - **SHA-1 Checksum:** `81d833236e994528d1482979261401b198d1ca53`
 - **Subfolder Requirement:** MAME requires the hard disk image to be inside a subfolder matching the driver name (`kinst/`) directly inside `roms/`.
-- **Use the standard compressed CHD.** Do not convert it to an uncompressed CHD: MAME reads a blank SHA-1 from an uncompressed copy, which breaks its save file (`diff/kinst.dif`, holding settings and high scores) on the next boot. The game decompresses the disk into RAM at startup anyway (about 14 seconds while the game boots), so compression has no effect on gameplay.
+- **Use the standard compressed CHD.** Do not convert it to an uncompressed CHD: MAME reads a blank SHA-1 from an uncompressed copy, which breaks its save file (`diff/kinst.dif`, holding settings and high scores) on the next boot. The game decompresses the disk into RAM in the background during its first ~15 seconds, so compression has no effect on gameplay.
 
 ---
 
@@ -87,6 +87,14 @@ sdmc:/switch/kinst/
 
 > [!IMPORTANT]
 > **Game Assets:** Arcade ROMs (`kinst.zip`) and CHD disk images (`kinst.chd`) are copyrighted by Rare / Midway and are not included in this repository. Place your own legally obtained copies into `sdmc:/switch/kinst/roms/`.
+
+---
+
+## Troubleshooting
+
+- `kinst.log` in `sdmc:/switch/kinst/` records each session; the previous four sessions are kept as `kinst.1.log` ... `kinst.4.log` (the newest is always `kinst.log`).
+- To record detailed per-second performance data (speed, frame skip, GPU and disk timing) for a bug report, create an empty file `sdmc:/switch/kinst/perf.txt`. Delete it to turn logging off again.
+- A `DIFF CHD ERROR` at boot means the save file doesn't match your CHD; delete `sdmc:/switch/kinst/diff/kinst.dif` (this resets settings and high scores).
 
 ---
 
