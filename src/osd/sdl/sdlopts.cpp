@@ -26,7 +26,8 @@ namespace {
 
 #ifndef INI_PATH
 #if defined(__SWITCH__)
-	#define INI_PATH "sdmc:/switch/kinst/ini;.;ini"
+	#include "nxgame.h"
+	#define INI_PATH NX_SD_DIR "/ini;.;ini"
 #elif defined(SDLMAME_WIN32)
 	#define INI_PATH ".;ini;ini/presets"
 #elif defined(SDLMAME_MACOSX)

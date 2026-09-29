@@ -68,7 +68,7 @@ inline counter sdl_fail;      // failed SDL texture create/lock/update/copy call
 inline std::atomic<int64_t> tex_live{ 0 };      // SDL textures currently alive
 inline std::atomic<uint64_t> tex_created{ 0 };  // SDL textures created (cumulative)
 
-// per-second perf lines in kinst.log are opt-in (sdmc:/switch/kinst/perf.txt)
+// per-second perf lines in the log are opt-in (perf.txt in the game folder)
 inline std::atomic<bool> enabled{ false };
 
 // filled in by the Switch OSD layer (needs libnx)

@@ -69,6 +69,7 @@ extern "C" DECLSPEC void SDLCALL SDL_SetModuleHandle(void *hInst);
 
 #if defined(__SWITCH__)
 #include <switch.h>
+#include "nxgame.h"
 #include <sys/stat.h>
 #include <malloc.h>
 #include <unistd.h>
@@ -121,29 +122,29 @@ extern "C" void userAppInit(void)
 {
 	romfsInit();
 	mkdir("sdmc:/switch", 0777);
-	mkdir("sdmc:/switch/kinst", 0777);
-	mkdir("sdmc:/switch/kinst/roms", 0777);
-	mkdir("sdmc:/switch/kinst/roms/kinst", 0777);
-	mkdir("sdmc:/switch/kinst/ini", 0777);
-	mkdir("sdmc:/switch/kinst/cfg", 0777);
-	chdir("sdmc:/switch/kinst");
+	mkdir(NX_SD_DIR, 0777);
+	mkdir(NX_SD_DIR "/roms", 0777);
+	mkdir(NX_SD_DIR "/roms/" NX_GAME_NAME, 0777);
+	mkdir(NX_SD_DIR "/ini", 0777);
+	mkdir(NX_SD_DIR "/cfg", 0777);
+	chdir(NX_SD_DIR);
 
-	setenv("HOME", "sdmc:/switch/kinst", 1);
-	osd_setenv("HOME", "sdmc:/switch/kinst", 1);
+	setenv("HOME", NX_SD_DIR, 1);
+	osd_setenv("HOME", NX_SD_DIR, 1);
 
-	// keep the last few sessions' logs: kinst.log -> kinst.1.log -> ... -> kinst.4.log
-	remove("sdmc:/switch/kinst/kinst.4.log");
-	rename("sdmc:/switch/kinst/kinst.3.log", "sdmc:/switch/kinst/kinst.4.log");
-	rename("sdmc:/switch/kinst/kinst.2.log", "sdmc:/switch/kinst/kinst.3.log");
-	rename("sdmc:/switch/kinst/kinst.1.log", "sdmc:/switch/kinst/kinst.2.log");
-	rename("sdmc:/switch/kinst/kinst.log", "sdmc:/switch/kinst/kinst.1.log");
+	// keep the last few sessions' logs: <game>.log -> <game>.1.log -> ... -> <game>.4.log
+	remove(NX_SD_DIR "/" NX_GAME_NAME ".4.log");
+	rename(NX_SD_DIR "/" NX_GAME_NAME ".3.log", NX_SD_DIR "/" NX_GAME_NAME ".4.log");
+	rename(NX_SD_DIR "/" NX_GAME_NAME ".2.log", NX_SD_DIR "/" NX_GAME_NAME ".3.log");
+	rename(NX_SD_DIR "/" NX_GAME_NAME ".1.log", NX_SD_DIR "/" NX_GAME_NAME ".2.log");
+	rename(NX_SD_DIR "/" NX_GAME_NAME ".log", NX_SD_DIR "/" NX_GAME_NAME ".1.log");
 
 	// Redirect stdout to persistent log file on SD card
-	FILE *fout = freopen("sdmc:/switch/kinst/kinst.log", "w", stdout);
+	FILE *fout = freopen(NX_SD_DIR "/" NX_GAME_NAME ".log", "w", stdout);
 	if (fout)
 	{
 		setvbuf(stdout, nullptr, _IOLBF, 4096);
-		// Mirror stderr to stdout so all MAME errors and exceptions appear in kinst.log
+		// Mirror stderr to stdout so all MAME errors and exceptions appear in the log
 		dup2(fileno(stdout), STDERR_FILENO);
 		setvbuf(stderr, nullptr, _IOLBF, 4096);
 	}
@@ -162,7 +163,7 @@ extern "C" void userAppInit(void)
 	// per-second performance logging is opt-in
 	{
 		struct stat st;
-		nxperf::enabled = (stat("sdmc:/switch/kinst/perf.txt", &st) == 0);
+		nxperf::enabled = (stat(NX_SD_DIR "/perf.txt", &st) == 0);
 	}
 
 	// local time zone offset so perf lines match capture filenames
@@ -173,21 +174,21 @@ extern "C" void userAppInit(void)
 			R_SUCCEEDED(timeToCalendarTimeWithMyRule(now, &caltime, &calinfo)))
 	{
 		nxperf::utc_offset = calinfo.offset;
-		printf("=== MAME-NX Killer Instinct Log Started %04u-%02u-%02u %02u:%02u:%02u ===\n",
+		printf("=== MAME-NX " NX_GAME_TITLE " Log Started %04u-%02u-%02u %02u:%02u:%02u ===\n",
 				caltime.year, caltime.month, caltime.day, caltime.hour, caltime.minute, caltime.second);
 		if (nxperf::enabled)
 			printf("perf logging enabled (perf.txt present)\n");
 	}
 	else
 	{
-		printf("=== MAME-NX Killer Instinct Log Started ===\n");
+		printf("=== MAME-NX " NX_GAME_TITLE " Log Started ===\n");
 	}
 	fflush(stdout);
 }
 
 extern "C" void userAppExit(void)
 {
-	printf("=== MAME-NX Killer Instinct Exiting ===\n");
+	printf("=== MAME-NX " NX_GAME_TITLE " Exiting ===\n");
 	fflush(stdout);
 	fflush(stderr);
 	socketExit();
@@ -231,7 +232,7 @@ int main(int argc, char** argv)
 
 	if (args.size() <= 1)
 	{
-		args.push_back("kinst");
+		args.push_back(NX_GAME_NAME);
 	}
 	// Switch performance defaults
 	bool has_video = false;
@@ -332,7 +333,7 @@ int main(int argc, char** argv)
 	// ourselves, have libnx send ISelfController::Exit like a real title so
 	// the system doesn't report "The software was closed because an error occurred".
 	__nx_applet_exit_mode = 1;
-	printf("=== MAME-NX Killer Instinct Exiting (libnx process exit) ===\n");
+	printf("=== MAME-NX " NX_GAME_TITLE " Exiting (libnx process exit) ===\n");
 	fflush(stdout);
 #endif
 

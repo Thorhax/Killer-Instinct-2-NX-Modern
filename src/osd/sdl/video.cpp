@@ -115,7 +115,7 @@ void sdl_osd_interface::video_exit()
 #if defined(__SWITCH__)
 namespace {
 
-// once-per-second performance summary written to kinst.log
+// once-per-second performance summary written to the log
 struct nx_perf_report
 {
 	uint64_t interval_start = 0;
