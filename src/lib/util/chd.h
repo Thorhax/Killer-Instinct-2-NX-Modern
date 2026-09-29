@@ -442,6 +442,12 @@ private:
 	};
 	std::vector<hunk_cache_entry> m_hunk_cache;
 	uint32_t                m_hunk_cache_mask = 0;
+
+#if defined(__SWITCH__)
+	// entire decompressed image held in RAM (read-only files only)
+	std::unique_ptr<uint8_t []> m_preload;
+	void preload_all();
+#endif
 };
 
 

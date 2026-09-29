@@ -17,6 +17,11 @@
 
 #include "eminline.h"
 
+#if defined(__SWITCH__)
+#include "nxperf.h"
+#include <cstdio>
+#endif
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -892,6 +897,9 @@ void chd_file::close()
 	m_cachehunk = ~0;
 	m_hunk_cache.clear();
 	m_hunk_cache_mask = 0;
+#if defined(__SWITCH__)
+	m_preload.reset();
+#endif
 }
 
 std::error_condition chd_file::codec_process_hunk(uint32_t hunknum)
@@ -1026,16 +1034,31 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 	if (UNEXPECTED(hunknum >= m_hunkcount))
 		return std::error_condition(error::HUNK_OUT_OF_RANGE);
 
+#if defined(__SWITCH__)
+	if (m_preload)
+	{
+		nxperf::scope nxperf_scope(nxperf::disk_hit);
+		memcpy(buffer, &m_preload[uint64_t(hunknum) * m_hunkbytes], m_hunkbytes);
+		return std::error_condition();
+	}
+#endif
+
 	if (m_hunk_cache_mask != 0)
 	{
 		auto &entry = m_hunk_cache[hunknum & m_hunk_cache_mask];
 		if (entry.m_hunknum == hunknum && entry.m_data.size() == m_hunkbytes)
 		{
+#if defined(__SWITCH__)
+			nxperf::scope nxperf_scope(nxperf::disk_hit);
+#endif
 			memcpy(buffer, entry.m_data.data(), m_hunkbytes);
 			return std::error_condition();
 		}
 	}
 
+#if defined(__SWITCH__)
+	nxperf::scope nxperf_scope(nxperf::disk_read);
+#endif
 	std::error_condition err = read_hunk_internal(hunknum, buffer);
 	if (!err && m_hunk_cache_mask != 0)
 	{
@@ -2669,6 +2692,10 @@ std::error_condition chd_file::open_common(bool writeable, const open_parent_fun
 
 		// finish opening the file
 		create_open_common();
+#if defined(__SWITCH__)
+		if (!writeable)
+			preload_all();
+#endif
 		return std::error_condition();
 	}
 	catch (std::error_condition const &err)
@@ -2678,6 +2705,56 @@ std::error_condition chd_file::open_common(bool writeable, const open_parent_fun
 		return err;
 	}
 }
+
+#if defined(__SWITCH__)
+/**
+ * @fn  void chd_file::preload_all()
+ *
+ * @brief   Decompress the whole image into RAM so emulated disk accesses never
+ *          touch the SD card or the decompressors.  Only done for read-only
+ *          files (e.g. the parent of a hard disk diff), which can't change.
+ */
+
+void chd_file::preload_all()
+{
+	// keep this bounded; KI's disk is ~125MB and title override leaves ~3GB
+	constexpr uint64_t MAX_PRELOAD = 768 * 1024 * 1024;
+	uint64_t const total = uint64_t(m_hunkcount) * m_hunkbytes;
+	if (!total || total > MAX_PRELOAD)
+	{
+		std::printf("chd: not preloading (%llu bytes)\n", (unsigned long long)total);
+		return;
+	}
+
+	std::unique_ptr<uint8_t []> data(new (std::nothrow) uint8_t[total]);
+	if (!data)
+	{
+		std::printf("chd: preload allocation of %llu bytes failed, reading from file\n", (unsigned long long)total);
+		return;
+	}
+
+	uint64_t const start = nxperf::ticks();
+	for (uint32_t hunknum = 0; hunknum < m_hunkcount; hunknum++)
+	{
+		std::error_condition const err = read_hunk_internal(hunknum, &data[uint64_t(hunknum) * m_hunkbytes]);
+		if (err)
+		{
+			std::printf("chd: preload failed at hunk %u (%s), reading from file\n", hunknum, err.message().c_str());
+			return;
+		}
+	}
+
+	m_preload = std::move(data);
+
+	// the small hunk cache is redundant now
+	m_hunk_cache.clear();
+	m_hunk_cache_mask = 0;
+
+	std::printf("chd: preloaded %u hunks (%llu bytes) into RAM in %.0f ms\n",
+			m_hunkcount, (unsigned long long)total, nxperf::ticks_to_ms(nxperf::ticks() - start));
+	std::fflush(stdout);
+}
+#endif
 
 /**
  * @fn  void chd_file::create_open_common()

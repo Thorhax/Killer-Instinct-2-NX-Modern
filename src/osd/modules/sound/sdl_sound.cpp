@@ -22,6 +22,7 @@
 
 #if defined(__SWITCH__)
 #include <switch.h>
+#include "nxperf.h"
 #endif
 
 #include <algorithm>
@@ -267,6 +268,12 @@ void sound_sdl::sink_callback(void *userdata, uint8_t *data, int len)
 #endif
 
 	stream_info *stream = reinterpret_cast<stream_info *>(userdata);
+#if defined(__SWITCH__)
+	uint32_t const wanted = len / 2 / stream->m_buffer.channels();
+	uint32_t const available = stream->m_buffer.available();
+	if (available < wanted)
+		nxperf::audio_short.add(wanted - available);
+#endif
 	stream->m_buffer.get((int16_t *)data, len / 2 / stream->m_buffer.channels());
 
 #if defined(__SWITCH__)

@@ -30,6 +30,10 @@
 // standard SDL headers
 #include <SDL2/SDL.h>
 
+#if defined(__SWITCH__)
+#include "nxperf.h"
+#endif
+
 // standard C headers
 #include <algorithm>
 #include <cmath>
@@ -338,7 +342,12 @@ void texture_info::render_quad(const render_primitive &prim, const int x, const 
 	set_coloralphamode(m_texture_id, &prim.color);
 	//printf("%d %d %d %d\n", target_rect.x, target_rect.y, target_rect.w, target_rect.h);
 	// Arghhh .. Just another bug. SDL_RenderCopy has severe issues with scaling ...
+#if defined(__SWITCH__)
+	if (SDL_RenderCopy(m_renderer->m_sdl_renderer,  m_texture_id, nullptr, &target_rect) < 0)
+		nxperf::sdl_fail.add(0);
+#else
 	SDL_RenderCopy(m_renderer->m_sdl_renderer,  m_texture_id, nullptr, &target_rect);
+#endif
 	//SDL_RenderCopyEx(m_renderer->m_sdl_renderer,  m_texture_id, nullptr, &target_rect, 0, nullptr, SDL_FLIP_NONE);
 	//SDL_RenderCopyEx(m_renderer->m_sdl_renderer,  m_texture_id, nullptr, nullptr, 0, nullptr, SDL_FLIP_NONE);
 }
@@ -609,7 +618,32 @@ int renderer_sdl2::draw(int update)
 
 	m_last_blit_pixels = blit_pixels;
 	m_last_blit_time = -osd_ticks();
-	SDL_RenderPresent(m_sdl_renderer);
+	{
+#if defined(__SWITCH__)
+		nxperf::scope nxperf_scope(nxperf::gpu_present);
+#endif
+		SDL_RenderPresent(m_sdl_renderer);
+	}
+#if defined(__SWITCH__)
+	{
+		// Don't let the GPU fall behind: with an unbounded backlog the display
+		// pipeline eventually starts discarding frames (1-2 fps on screen while
+		// emulation runs at 100%).  Waiting here also measures GPU time per frame.
+		using gl_finish_func = void (*)(void);
+		static gl_finish_func const s_gl_finish = reinterpret_cast<gl_finish_func>(SDL_GL_GetProcAddress("glFinish"));
+		static bool s_logged = false;
+		if (!s_logged)
+		{
+			s_logged = true;
+			osd_printf_verbose("switch: glFinish %s\n", s_gl_finish ? "enabled" : "not available");
+		}
+		if (s_gl_finish)
+		{
+			nxperf::scope nxperf_scope(nxperf::gpu_finish);
+			s_gl_finish();
+		}
+	}
+#endif
 	m_last_blit_time += osd_ticks();
 
 	return 0;
@@ -747,6 +781,17 @@ texture_info::texture_info(renderer_sdl2 *renderer, const render_texinfo &texsou
 	if (!m_texture_id)
 		osd_printf_error("Error creating texture: %d x %d, pixelformat %s error: %s\n", m_setup.rotwidth, m_setup.rotheight,
 				m_copyinfo->dstname, SDL_GetError());
+#if defined(__SWITCH__)
+	if (m_texture_id)
+	{
+		nxperf::tex_live++;
+		nxperf::tex_created++;
+	}
+	else
+	{
+		nxperf::sdl_fail.add(0);
+	}
+#endif
 
 	if (m_sdl_access == SDL_TEXTUREACCESS_STATIC)
 	{
@@ -762,6 +807,10 @@ texture_info::~texture_info()
 {
 	if (is_pixels_owned() && m_pixels)
 		free(m_pixels);
+#if defined(__SWITCH__)
+	if (m_texture_id)
+		nxperf::tex_live--;
+#endif
 	SDL_DestroyTexture(m_texture_id);
 }
 
@@ -771,6 +820,9 @@ texture_info::~texture_info()
 
 void texture_info::set_data(const render_texinfo &texsource, const uint32_t flags)
 {
+#if defined(__SWITCH__)
+	nxperf::scope nxperf_scope(nxperf::tex_upload);
+#endif
 	m_copyinfo->time -= osd_ticks();
 	if (m_sdl_access == SDL_TEXTUREACCESS_STATIC)
 	{
@@ -784,11 +836,25 @@ void texture_info::set_data(const render_texinfo &texsource, const uint32_t flag
 			m_pitch = m_setup.rotwidth * m_copyinfo->blitter->m_dest_bpp;
 			m_copyinfo->blitter->texop(this, &texsource);
 		}
+#if defined(__SWITCH__)
+		if (SDL_UpdateTexture(m_texture_id, nullptr, m_pixels, m_pitch) < 0)
+			nxperf::sdl_fail.add(0);
+#else
 		SDL_UpdateTexture(m_texture_id, nullptr, m_pixels, m_pitch);
+#endif
 	}
 	else
 	{
+#if defined(__SWITCH__)
+		if (SDL_LockTexture(m_texture_id, nullptr, (void **)&m_pixels, &m_pitch) < 0)
+		{
+			nxperf::sdl_fail.add(0);
+			m_copyinfo->time += osd_ticks();
+			return;
+		}
+#else
 		SDL_LockTexture(m_texture_id, nullptr, (void **)&m_pixels, &m_pitch);
+#endif
 		if ( m_copyinfo->blitter->m_is_passthrough )
 		{
 			const uint8_t *src = (uint8_t *)texsource.base;

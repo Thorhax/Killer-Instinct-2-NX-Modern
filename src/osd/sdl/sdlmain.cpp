@@ -70,12 +70,44 @@ extern "C" DECLSPEC void SDLCALL SDL_SetModuleHandle(void *hInst);
 #if defined(__SWITCH__)
 #include <switch.h>
 #include <sys/stat.h>
+#include <malloc.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 extern "C" int fileno(FILE *);
+extern "C" u32 __nx_applet_exit_mode;
+
+#include "nxperf.h"
 extern "C" int setenv(const char *name, const char *value, int overwrite);
+
+void nxperf::mem_stats(uint64_t &used, uint64_t &heap, uint64_t &borrowed, uint64_t &ipc, uint64_t &device) noexcept
+{
+	used = heap = borrowed = ipc = device = 0;
+	heap = mallinfo().uordblks;
+	u64 value = 0;
+	if (R_SUCCEEDED(svcGetInfo(&value, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0)))
+		used = value;
+
+	// sum memory lent out to other processes/devices
+	for (u64 addr = 0; ; )
+	{
+		MemoryInfo info;
+		u32 pageinfo;
+		if (R_FAILED(svcQueryMemory(&info, &pageinfo, addr)))
+			break;
+		if (info.attr & MemAttr_IsBorrowed)
+			borrowed += info.size;
+		if (info.attr & MemAttr_IsIpcMapped)
+			ipc += info.size;
+		if (info.attr & MemAttr_IsDeviceMapped)
+			device += info.size;
+		u64 const next = info.addr + info.size;
+		if (next <= addr)
+			break;
+		addr = next;
+	}
+}
 
 extern "C" void userAppInit(void)
 {
@@ -90,6 +122,13 @@ extern "C" void userAppInit(void)
 
 	setenv("HOME", "sdmc:/switch/kinst", 1);
 	osd_setenv("HOME", "sdmc:/switch/kinst", 1);
+
+	// keep the last few sessions' logs: kinst.log -> kinst.1.log -> ... -> kinst.4.log
+	remove("sdmc:/switch/kinst/kinst.4.log");
+	rename("sdmc:/switch/kinst/kinst.3.log", "sdmc:/switch/kinst/kinst.4.log");
+	rename("sdmc:/switch/kinst/kinst.2.log", "sdmc:/switch/kinst/kinst.3.log");
+	rename("sdmc:/switch/kinst/kinst.1.log", "sdmc:/switch/kinst/kinst.2.log");
+	rename("sdmc:/switch/kinst/kinst.log", "sdmc:/switch/kinst/kinst.1.log");
 
 	// Redirect stdout to persistent log file on SD card
 	FILE *fout = freopen("sdmc:/switch/kinst/kinst.log", "w", stdout);
@@ -110,7 +149,21 @@ extern "C" void userAppInit(void)
 		nxlinkStdio();
 	}
 
-	printf("=== MAME-NX Killer Instinct Log Started ===\n");
+	// local time zone offset so perf lines match capture filenames
+	u64 now = 0;
+	TimeCalendarTime caltime;
+	TimeCalendarAdditionalInfo calinfo;
+	if (R_SUCCEEDED(timeGetCurrentTime(TimeType_UserSystemClock, &now)) &&
+			R_SUCCEEDED(timeToCalendarTimeWithMyRule(now, &caltime, &calinfo)))
+	{
+		nxperf::utc_offset = calinfo.offset;
+		printf("=== MAME-NX Killer Instinct Log Started %04u-%02u-%02u %02u:%02u:%02u ===\n",
+				caltime.year, caltime.month, caltime.day, caltime.hour, caltime.minute, caltime.second);
+	}
+	else
+	{
+		printf("=== MAME-NX Killer Instinct Log Started ===\n");
+	}
 	fflush(stdout);
 }
 
@@ -242,6 +295,28 @@ int main(int argc, char** argv)
 	}
 	fflush(stdout);
 	fflush(stderr);
+
+#if defined(__SWITCH__)
+	// MAME only quits the SDL subsystems it started; make sure SDL's Switch
+	// backends release all GPU/audio memory before we hand back to hbl,
+	// otherwise hbl can fail (0xD401) reading the next NRO into that memory
+	SDL_Quit();
+
+	// Something in the graphics/audio stack leaves ~49MB of heap borrowed
+	// even after SDL_Quit, and hbl aborts (0xD401) when it loads the next
+	// NRO over it.  Pointing the loader return address at svcExitProcess
+	// (what libnx uses when there is no loader) makes libnx do its normal
+	// cleanup, including closing the applet session so the system sees an
+	// intentional exit, and then end the process instead of jumping to hbl.
+	// Note libnx branches to this pointer unconditionally, so it must not be null.
+	envSetExitFuncPtr(reinterpret_cast<LoaderReturnFn>(&svcExitProcess));
+	// An NRO normally leaves AM notification to hbl; since we end the process
+	// ourselves, have libnx send ISelfController::Exit like a real title so
+	// the system doesn't report "The software was closed because an error occurred".
+	__nx_applet_exit_mode = 1;
+	printf("=== MAME-NX Killer Instinct Exiting (libnx process exit) ===\n");
+	fflush(stdout);
+#endif
 
 #ifdef SDLMAME_UNIX
 #if (!defined(SDLMAME_MACOSX)) && (!defined(SDLMAME_HAIKU)) && (!defined(SDLMAME_EMSCRIPTEN)) && (!defined(SDLMAME_ANDROID)) && (!defined(__SWITCH__))

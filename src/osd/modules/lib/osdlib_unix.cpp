@@ -607,9 +607,10 @@ void virtual_memory_allocation::do_free(void *start, std::size_t size) noexcept
 
 				if (it->has_dual_map)
 				{
-					jitClose(&it->jit);
+					Result const rc = jitClose(&it->jit);
 					s_drc_allocations.erase(it);
-					printf("switch: JIT dual-mapping freed (%p)\n", start);
+					printf("switch: JIT dual-mapping freed (%p) rc=0x%08x\n", start, rc);
+					fflush(stdout);
 					return;
 				}
 				else

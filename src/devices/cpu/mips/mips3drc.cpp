@@ -34,6 +34,10 @@
 #include "cpu/drcuml.h"
 #include "cpu/drcumlsh.h"
 
+#if defined(__SWITCH__)
+#include "nxperf.h"
+#endif
+
 
 /* Use with STRICT_VERIFY to print debug info to console for extra validation checks */
 /* Set to 1 to activate and use MIPS3DRC_STRICT_VERIFY in the drc options */
@@ -302,6 +306,9 @@ void mips3_device::code_compile_block(uint8_t mode, offs_t pc)
 	bool override = false;
 
 	auto profile = g_profiler.start(PROFILER_DRC_COMPILE);
+#if defined(__SWITCH__)
+	nxperf::scope nxperf_scope(nxperf::drc_compile);
+#endif
 
 	/* get a description of this sequence */
 	desclist = m_drcfe->describe_code(pc);
