@@ -12,7 +12,9 @@ Standalone Nintendo Switch arcade port of **Killer Instinct** powered by modern 
 - **Direct Boot:** Boots directly into Killer Instinct (`kinst.nro`) without extra frontend menus.
 - **Native Switch Pad API:** Low-latency native libnx `pad` input handling.
 - **Multi-Core Scheduling:** Thread core mask enabled across all 3 available CPU cores (Cores 0, 1, and 2) for smooth emulation and audio synchronization.
-- **Clean Exit Architecture:** Exits cleanly back to `hbmenu` without user break panics.
+- **Clean Exit Architecture:** `Plus + Minus` saves settings/high scores and closes the game cleanly to the Switch HOME menu.
+- **Stutter-Free Disk Access:** The whole hard disk image is decompressed into RAM at boot, so FMVs, stage loads and streamed backgrounds never wait on the SD card.
+- **Stable Long Sessions:** GPU frame pacing keeps the display from falling behind during long play sessions.
 - **Intuitive Combat Controls:** Six-button arcade layout configured with dedicated Punch and Kick rows.
 - **Two-Player Parity:** Complete Player 1 and Player 2 support with mirrored bindings.
 - **Safe Quit Combo:** `Plus + Minus` combo prevents accidental in-game exits during fast button combos.
@@ -37,7 +39,7 @@ Controls are configured with dedicated **Punch (top)** and **Kick (bottom)** row
 | **Minus (-)** | Insert Coin | `COIN1 / COIN2` | `JOYCODE_1_SELECT` | `JOYCODE_2_SELECT` |
 | **Stick L Click (L3)**| Pause Game | `UI_PAUSE` | Pause | Pause |
 | **Stick R Click (R3)**| MAME Options / Cheats | `UI_MENU` | Menu | Menu |
-| **Plus + Minus** | Quit to hbmenu | `UI_CANCEL` | Exit | Exit |
+| **Plus + Minus** | Quit to HOME menu | `UI_CANCEL` | Exit | Exit |
 
 ---
 
@@ -57,10 +59,14 @@ This standalone port is based on **modern MAME (0.289)**. Ensure you are using t
 - **Format:** Modern MAME CHD format (CHD v5)
 - **SHA-1 Checksum:** `81d833236e994528d1482979261401b198d1ca53`
 - **Subfolder Requirement:** MAME requires the hard disk image to be inside a subfolder matching the driver name (`kinst/`) directly inside `roms/`.
+- **Use the standard compressed CHD.** Do not convert it to an uncompressed CHD: MAME reads a blank SHA-1 from an uncompressed copy, which breaks its save file (`diff/kinst.dif`, holding settings and high scores) on the next boot. The game decompresses the disk into RAM at startup anyway (about 14 seconds while the game boots), so compression has no effect on gameplay.
 
 ---
 
 ## Installation
+
+> [!NOTE]
+> Launch with **title override** (full RAM mode), not from the album/applet mode. The RAM disk preload and CPU recompiler cache need more memory than applet mode provides.
 
 1. Download the latest release from the [Releases](https://github.com/Thorhax/Killer-Instinct-NX-Modern/releases) page.
 2. Extract the archive directly to your SD card. The structure should match:
