@@ -68,8 +68,21 @@ inline counter sdl_fail;      // failed SDL texture create/lock/update/copy call
 inline std::atomic<int64_t> tex_live{ 0 };      // SDL textures currently alive
 inline std::atomic<uint64_t> tex_created{ 0 };  // SDL textures created (cumulative)
 
+// per-second perf lines in kinst.log are opt-in (sdmc:/switch/kinst/perf.txt)
+inline std::atomic<bool> enabled{ false };
+
 // filled in by the Switch OSD layer (needs libnx)
 void mem_stats(uint64_t &used, uint64_t &heap, uint64_t &borrowed, uint64_t &ipc, uint64_t &device) noexcept;
+
+// Registered by the Switch OSD layer at startup; moves the calling thread off
+// the emulation core at low priority.  A pointer rather than a function so
+// lib/util (CHD preload thread) needs no link dependency on the OSD.
+inline void (*background_thread_hook)() noexcept = nullptr;
+inline void set_background_thread() noexcept
+{
+	if (background_thread_hook)
+		background_thread_hook();
+}
 
 // seconds east of UTC for the console's time zone, so log lines can be
 // matched against capture filenames (which use local time)

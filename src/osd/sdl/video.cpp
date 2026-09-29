@@ -130,6 +130,9 @@ struct nx_perf_report
 
 	void frame(running_machine &machine, bool skipped, uint64_t render_ticks)
 	{
+		if (!nxperf::enabled.load(std::memory_order_relaxed))
+			return;
+
 		uint64_t const now = nxperf::ticks();
 		if (!interval_start)
 		{

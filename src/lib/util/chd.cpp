@@ -812,6 +812,9 @@ std::error_condition chd_file::open(
 		return filerr;
 
 	// now open the CHD
+#if defined(__SWITCH__)
+	m_path = filename;
+#endif
 	return open(std::move(file), writeable, parent, open_parent);
 }
 
@@ -858,6 +861,11 @@ std::error_condition chd_file::open(
 
 void chd_file::close()
 {
+#if defined(__SWITCH__)
+	// the preload thread writes into our buffers; it must be gone first
+	stop_preload();
+#endif
+
 	// reset file characteristics
 	m_file.reset();
 	m_allow_reads = false;
@@ -899,6 +907,8 @@ void chd_file::close()
 	m_hunk_cache_mask = 0;
 #if defined(__SWITCH__)
 	m_preload.reset();
+	m_preload_state.reset();
+	m_path.clear();
 #endif
 }
 
@@ -1037,9 +1047,34 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 #if defined(__SWITCH__)
 	if (m_preload)
 	{
-		nxperf::scope nxperf_scope(nxperf::disk_hit);
-		memcpy(buffer, &m_preload[uint64_t(hunknum) * m_hunkbytes], m_hunkbytes);
-		return std::error_condition();
+		uint8_t *const slot = &m_preload[uint64_t(hunknum) * m_hunkbytes];
+		std::atomic<uint8_t> &state = m_preload_state[hunknum];
+		uint8_t st = state.load(std::memory_order_acquire);
+		if (st == PRELOAD_READY)
+		{
+			nxperf::scope nxperf_scope(nxperf::disk_hit);
+			memcpy(buffer, slot, m_hunkbytes);
+			return std::error_condition();
+		}
+
+		nxperf::scope nxperf_scope(nxperf::disk_read);
+		if ((st == PRELOAD_EMPTY) && state.compare_exchange_strong(st, PRELOAD_BUSY, std::memory_order_acquire))
+		{
+			// not loaded yet: decompress it ourselves and keep it
+			std::error_condition const err = read_hunk_internal(hunknum, slot);
+			if (err)
+			{
+				state.store(PRELOAD_EMPTY, std::memory_order_release);
+				return err;
+			}
+			state.store(PRELOAD_READY, std::memory_order_release);
+			memcpy(buffer, slot, m_hunkbytes);
+			return std::error_condition();
+		}
+
+		// the preload thread is working on this hunk right now; read it
+		// directly rather than wait (the slot is not ours to touch)
+		return read_hunk_internal(hunknum, buffer);
 	}
 #endif
 
@@ -2693,8 +2728,8 @@ std::error_condition chd_file::open_common(bool writeable, const open_parent_fun
 		// finish opening the file
 		create_open_common();
 #if defined(__SWITCH__)
-		if (!writeable)
-			preload_all();
+		if (!writeable && !m_no_preload)
+			start_preload();
 #endif
 		return std::error_condition();
 	}
@@ -2708,51 +2743,108 @@ std::error_condition chd_file::open_common(bool writeable, const open_parent_fun
 
 #if defined(__SWITCH__)
 /**
- * @fn  void chd_file::preload_all()
+ * @fn  void chd_file::start_preload()
  *
- * @brief   Decompress the whole image into RAM so emulated disk accesses never
- *          touch the SD card or the decompressors.  Only done for read-only
- *          files (e.g. the parent of a hard disk diff), which can't change.
+ * @brief   Start decompressing the whole image into RAM on a background
+ *          thread, so emulated disk accesses never touch the SD card or the
+ *          decompressors once it finishes, without delaying startup.  Only
+ *          done for read-only files (e.g. the parent of a hard disk diff).
+ *          Until a hunk is loaded, read_hunk() decompresses it on demand.
  */
 
-void chd_file::preload_all()
+void chd_file::start_preload()
 {
 	// keep this bounded; KI's disk is ~125MB and title override leaves ~3GB
 	constexpr uint64_t MAX_PRELOAD = 768 * 1024 * 1024;
 	uint64_t const total = uint64_t(m_hunkcount) * m_hunkbytes;
-	if (!total || total > MAX_PRELOAD)
+	if (!total || total > MAX_PRELOAD || m_path.empty())
 	{
 		std::printf("chd: not preloading (%llu bytes)\n", (unsigned long long)total);
 		return;
 	}
 
 	std::unique_ptr<uint8_t []> data(new (std::nothrow) uint8_t[total]);
-	if (!data)
+	std::unique_ptr<std::atomic<uint8_t> []> state(new (std::nothrow) std::atomic<uint8_t>[m_hunkcount]());
+	if (!data || !state)
 	{
 		std::printf("chd: preload allocation of %llu bytes failed, reading from file\n", (unsigned long long)total);
 		return;
 	}
 
-	uint64_t const start = nxperf::ticks();
-	for (uint32_t hunknum = 0; hunknum < m_hunkcount; hunknum++)
-	{
-		std::error_condition const err = read_hunk_internal(hunknum, &data[uint64_t(hunknum) * m_hunkbytes]);
-		if (err)
-		{
-			std::printf("chd: preload failed at hunk %u (%s), reading from file\n", hunknum, err.message().c_str());
-			return;
-		}
-	}
-
 	m_preload = std::move(data);
+	m_preload_state = std::move(state);
 
-	// the small hunk cache is redundant now
+	// the small hunk cache is redundant with the RAM image
 	m_hunk_cache.clear();
 	m_hunk_cache_mask = 0;
 
-	std::printf("chd: preloaded %u hunks (%llu bytes) into RAM in %.0f ms\n",
-			m_hunkcount, (unsigned long long)total, nxperf::ticks_to_ms(nxperf::ticks() - start));
+	m_preload_stop = false;
+	try
+	{
+		m_preload_thread = std::thread([this] () { preload_worker(); });
+		std::printf("chd: background preload of %u hunks (%llu bytes) started\n", m_hunkcount, (unsigned long long)total);
+	}
+	catch (...)
+	{
+		// no thread: every hunk is still loaded on demand into the RAM image
+		std::printf("chd: could not start preload thread, loading on demand\n");
+	}
 	std::fflush(stdout);
+}
+
+void chd_file::preload_worker()
+{
+	nxperf::set_background_thread();
+
+	// use a private handle so we never share the file position or the
+	// decompressors with the emulation thread
+	chd_file source;
+	source.m_no_preload = true;
+	std::error_condition const openerr = source.open(m_path, false, nullptr);
+	if (openerr)
+	{
+		std::printf("chd: preload thread could not open %s (%s), loading on demand\n", m_path.c_str(), openerr.message().c_str());
+		std::fflush(stdout);
+		return;
+	}
+	source.m_hunk_cache.clear();
+	source.m_hunk_cache_mask = 0;
+
+	uint64_t const start = nxperf::ticks();
+	uint32_t loaded = 0;
+	for (uint32_t hunknum = 0; (hunknum < m_hunkcount) && !m_preload_stop.load(std::memory_order_relaxed); hunknum++)
+	{
+		std::atomic<uint8_t> &state = m_preload_state[hunknum];
+		uint8_t expected = PRELOAD_EMPTY;
+		if (!state.compare_exchange_strong(expected, PRELOAD_BUSY, std::memory_order_acquire))
+			continue; // already loaded (or being loaded) on demand
+
+		std::error_condition const err = source.read_hunk_internal(hunknum, &m_preload[uint64_t(hunknum) * m_hunkbytes]);
+		if (err)
+		{
+			// leave it for on-demand loading and carry on
+			state.store(PRELOAD_EMPTY, std::memory_order_release);
+			continue;
+		}
+		state.store(PRELOAD_READY, std::memory_order_release);
+		loaded++;
+	}
+
+	if (!m_preload_stop.load(std::memory_order_relaxed))
+	{
+		std::printf("chd: background preload finished in %.0f ms (%u hunks by preload thread, %u on demand)\n",
+				nxperf::ticks_to_ms(nxperf::ticks() - start), loaded, m_hunkcount - loaded);
+		std::fflush(stdout);
+	}
+}
+
+void chd_file::stop_preload()
+{
+	if (m_preload_thread.joinable())
+	{
+		m_preload_stop = true;
+		m_preload_thread.join();
+	}
 }
 #endif
 
@@ -2794,7 +2886,11 @@ void chd_file::create_open_common()
 	m_compressed.resize(m_hunkbytes);
 	m_cache.resize(m_hunkbytes);
 
-	if (m_hunkbytes > 0 && m_hunkcount > 0)
+	if (m_hunkbytes > 0 && m_hunkcount > 0
+#if defined(__SWITCH__)
+			&& !m_no_preload
+#endif
+			)
 	{
 		// Target up to 32MB of decompressed hunk cache in Switch RAM
 		uint32_t target_slots = (32 * 1024 * 1024) / m_hunkbytes;

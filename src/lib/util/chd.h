@@ -22,6 +22,9 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#if defined(__SWITCH__)
+#include <thread>
+#endif
 
 
 /***************************************************************************
@@ -444,9 +447,20 @@ private:
 	uint32_t                m_hunk_cache_mask = 0;
 
 #if defined(__SWITCH__)
-	// entire decompressed image held in RAM (read-only files only)
+	// Entire decompressed image held in RAM (read-only files only), filled by
+	// a background thread so the machine can start immediately.  Each hunk has
+	// a state: PRELOAD_EMPTY, PRELOAD_BUSY (someone is decompressing it into
+	// the slot) or PRELOAD_READY (slot contents valid).
+	enum : uint8_t { PRELOAD_EMPTY = 0, PRELOAD_BUSY = 1, PRELOAD_READY = 2 };
 	std::unique_ptr<uint8_t []> m_preload;
-	void preload_all();
+	std::unique_ptr<std::atomic<uint8_t> []> m_preload_state;
+	std::thread m_preload_thread;
+	std::atomic<bool> m_preload_stop{ false };
+	std::string m_path;             // filename, so the preload thread can open its own handle
+	bool m_no_preload = false;      // set on the preload thread's private instance
+	void start_preload();
+	void preload_worker();
+	void stop_preload();
 #endif
 };
 

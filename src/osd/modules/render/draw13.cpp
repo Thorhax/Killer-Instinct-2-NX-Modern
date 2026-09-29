@@ -952,12 +952,16 @@ texture_info *renderer_sdl2::texture_find(const render_primitive &prim, const qu
 	{
 		if ((texture->hash() == texhash) && texture->matches(prim, setup))
 		{
+#if !defined(__SWITCH__)
 			// would we choose another blitter based on performance?
+			// (not on Switch: the timings flip between near-identical
+			// blitters and the texture got recreated every ~2.5 seconds)
 			if ((texture->m_copyinfo->samples & 0x7f) == 0x7f)
 			{
 				if (texture->m_copyinfo != texture->compute_size_type())
 					return nullptr;
 			}
+#endif
 			texture->m_last_access = now;
 			return &*texture;
 		}

@@ -109,6 +109,14 @@ void nxperf::mem_stats(uint64_t &used, uint64_t &heap, uint64_t &borrowed, uint6
 	}
 }
 
+static void nx_background_thread() noexcept
+{
+	// cores 1/2 only (core 0 runs the emulation), below the emulation (0x2C)
+	// and audio (0x2B) threads so it only uses otherwise idle time
+	svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, (1 << 1) | (1 << 2));
+	svcSetThreadPriority(CUR_THREAD_HANDLE, 0x30);
+}
+
 extern "C" void userAppInit(void)
 {
 	romfsInit();
@@ -149,6 +157,14 @@ extern "C" void userAppInit(void)
 		nxlinkStdio();
 	}
 
+	nxperf::background_thread_hook = &nx_background_thread;
+
+	// per-second performance logging is opt-in
+	{
+		struct stat st;
+		nxperf::enabled = (stat("sdmc:/switch/kinst/perf.txt", &st) == 0);
+	}
+
 	// local time zone offset so perf lines match capture filenames
 	u64 now = 0;
 	TimeCalendarTime caltime;
@@ -159,6 +175,8 @@ extern "C" void userAppInit(void)
 		nxperf::utc_offset = calinfo.offset;
 		printf("=== MAME-NX Killer Instinct Log Started %04u-%02u-%02u %02u:%02u:%02u ===\n",
 				caltime.year, caltime.month, caltime.day, caltime.hour, caltime.minute, caltime.second);
+		if (nxperf::enabled)
+			printf("perf logging enabled (perf.txt present)\n");
 	}
 	else
 	{
