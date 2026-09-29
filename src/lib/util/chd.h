@@ -456,6 +456,7 @@ private:
 	std::unique_ptr<std::atomic<uint8_t> []> m_preload_state;
 	std::thread m_preload_thread;
 	std::atomic<bool> m_preload_stop{ false };
+	std::atomic<uint32_t> m_preload_hint{ ~uint32_t(0) }; // where the emulation last missed; preload reads ahead from here
 	std::string m_path;             // filename, so the preload thread can open its own handle
 	bool m_no_preload = false;      // set on the preload thread's private instance
 	void start_preload();
