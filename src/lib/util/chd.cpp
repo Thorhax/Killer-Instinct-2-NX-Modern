@@ -1110,7 +1110,7 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 		if (entry.m_hunknum == hunknum && entry.m_data.size() == m_hunkbytes)
 		{
 #if defined(__SWITCH__)
-			nxperf::scope nxperf_scope(nxperf::disk_hit);
+			nxperf::scope nxperf_scope(m_no_preload ? nxperf::ignored : nxperf::disk_hit);
 #endif
 			memcpy(buffer, entry.m_data.data(), m_hunkbytes);
 			return std::error_condition();
@@ -1118,7 +1118,9 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 	}
 
 #if defined(__SWITCH__)
-	nxperf::scope nxperf_scope(nxperf::disk_read);
+	// (the preload threads' private instances only get here for hunks that
+	// are copies of other hunks; that's background work, not emulation time)
+	nxperf::scope nxperf_scope(m_no_preload ? nxperf::ignored : nxperf::disk_read);
 #endif
 	std::error_condition err = read_hunk_internal(hunknum, buffer);
 	if (!err && m_hunk_cache_mask != 0)
@@ -2806,114 +2808,141 @@ void chd_file::start_preload()
 
 	m_preload_stop = false;
 	m_preload_hint = ~uint32_t(0);
-	try
+	m_preload_ahead = ~uint32_t(0);
+	m_preload_sweep = 0;
+	m_preload_loaded = 0;
+	m_preload_readahead = 0;
+	m_preload_start = nxperf::ticks();
+	unsigned started = 0;
+	for (unsigned i = 0; i < PRELOAD_THREADS; i++)
 	{
-		m_preload_thread = std::thread([this] () { preload_worker(); });
-		std::printf("chd: background preload of %u hunks (%llu bytes) started\n", m_hunkcount, (unsigned long long)total);
+		m_preload_active++;
+		try
+		{
+			m_preload_threads[i] = std::thread([this, i] () { preload_worker(i); });
+			started++;
+		}
+		catch (...)
+		{
+			// fewer threads (or none): hunks are still loaded on demand
+			m_preload_active--;
+		}
 	}
-	catch (...)
-	{
-		// no thread: every hunk is still loaded on demand into the RAM image
-		std::printf("chd: could not start preload thread, loading on demand\n");
-	}
+	std::printf("chd: background preload of %u hunks (%llu bytes) started on %u threads\n", m_hunkcount, (unsigned long long)total, started);
 	std::fflush(stdout);
 }
 
-void chd_file::preload_worker()
+void chd_file::preload_worker(unsigned index)
 {
-	nxperf::set_background_thread();
+	// spread over cores 1 and 2, never core 0 (emulation)
+	nxperf::set_background_thread((index & 1) ? 1 : 2);
+
+	constexpr uint32_t NONE = ~uint32_t(0);
 
 	// use a private handle so we never share the file position or the
-	// decompressors with the emulation thread
+	// decompressors with the emulation thread or the other preload thread
 	chd_file source;
 	source.m_no_preload = true;
 	std::error_condition const openerr = source.open(m_path, false, nullptr);
 	if (openerr)
 	{
-		std::printf("chd: preload thread could not open %s (%s), loading on demand\n", m_path.c_str(), openerr.message().c_str());
+		std::printf("chd: preload thread %u could not open %s (%s)\n", index, m_path.c_str(), openerr.message().c_str());
 		std::fflush(stdout);
-		return;
 	}
-	source.m_hunk_cache.clear();
-	source.m_hunk_cache_mask = 0;
-
-	constexpr uint32_t NONE = ~uint32_t(0);
-	uint64_t const start = nxperf::ticks();
-	uint32_t loaded = 0;        // hunks loaded by this thread
-	uint32_t readahead = 0;     // ...of which while following the emulation
-	uint32_t sweep = 0;         // background front-to-back position
-	uint32_t ahead = NONE;      // read-ahead position, following the emulation's misses
-	uint32_t ahead_ready = 0;   // consecutive already-loaded hunks seen while reading ahead
-	while (!m_preload_stop.load(std::memory_order_relaxed))
+	else
 	{
-		// the emulation just had to load something itself: continue from there
-		uint32_t const hint = m_preload_hint.exchange(NONE, std::memory_order_acquire);
-		if (hint < m_hunkcount)
-		{
-			ahead = hint;
-			ahead_ready = 0;
-		}
+		source.m_hunk_cache.clear();
+		source.m_hunk_cache_mask = 0;
 
-		uint32_t hunknum;
-		bool const following = (ahead != NONE);
-		if (following)
+		uint32_t ahead_ready = 0;   // consecutive already-loaded hunks seen while reading ahead
+		while (!m_preload_stop.load(std::memory_order_relaxed))
 		{
-			hunknum = ahead++;
-			if (ahead >= m_hunkcount)
-				ahead = NONE;
-
-			// skip odd hunks that are already loaded, but a long stretch of
-			// loaded data means this run is covered: go back to the sweep
-			if (m_preload_state[hunknum].load(std::memory_order_acquire) == PRELOAD_READY)
+			// the emulation just had to wait for or load something: read ahead from there
+			uint32_t const hint = m_preload_hint.exchange(NONE, std::memory_order_acq_rel);
+			if (hint < m_hunkcount)
 			{
-				if (++ahead_ready >= 64)
-					ahead = NONE;
+				// only move forward within the current run (we may already be
+				// well ahead of the game); a jump elsewhere starts a new run
+				uint32_t const current = m_preload_ahead.load(std::memory_order_acquire);
+				if ((current == NONE) || (hint > current) || ((current - hint) > 4096))
+				{
+					m_preload_ahead.store(hint, std::memory_order_release);
+					ahead_ready = 0;
+				}
+			}
+
+			uint32_t hunknum;
+			bool following = false;
+			uint32_t a = m_preload_ahead.load(std::memory_order_acquire);
+			if (a != NONE)
+			{
+				uint32_t const next = ((a + 1) < m_hunkcount) ? (a + 1) : NONE;
+				if (!m_preload_ahead.compare_exchange_weak(a, next, std::memory_order_acq_rel))
+					continue; // the other thread took it (or a new hint arrived)
+				hunknum = a;
+				following = true;
+
+				// skip odd hunks that are already loaded, but a long stretch of
+				// loaded data means this run is covered: go back to the sweep
+				if (m_preload_state[hunknum].load(std::memory_order_acquire) == PRELOAD_READY)
+				{
+					if ((++ahead_ready >= 64) && (next != NONE))
+					{
+						uint32_t expected = next;
+						m_preload_ahead.compare_exchange_strong(expected, NONE, std::memory_order_acq_rel);
+						ahead_ready = 0;
+					}
+					continue;
+				}
+				ahead_ready = 0;
+			}
+			else
+			{
+				hunknum = m_preload_sweep.fetch_add(1, std::memory_order_relaxed);
+				if (hunknum >= m_hunkcount)
+					break; // every hunk has been claimed
+				if (m_preload_state[hunknum].load(std::memory_order_acquire) == PRELOAD_READY)
+					continue;
+			}
+
+			std::atomic<uint8_t> &state = m_preload_state[hunknum];
+			uint8_t expected = PRELOAD_EMPTY;
+			if (!state.compare_exchange_strong(expected, PRELOAD_BUSY, std::memory_order_acquire))
+				continue; // being loaded elsewhere right now
+
+			std::error_condition const err = source.read_hunk_internal(hunknum, &m_preload[uint64_t(hunknum) * m_hunkbytes]);
+			if (err)
+			{
+				// leave it for on-demand loading and carry on
+				state.store(PRELOAD_EMPTY, std::memory_order_release);
 				continue;
 			}
-			ahead_ready = 0;
+			state.store(PRELOAD_READY, std::memory_order_release);
+			m_preload_loaded.fetch_add(1, std::memory_order_relaxed);
+			if (following)
+				m_preload_readahead.fetch_add(1, std::memory_order_relaxed);
 		}
-		else
-		{
-			while ((sweep < m_hunkcount) && (m_preload_state[sweep].load(std::memory_order_acquire) == PRELOAD_READY))
-				sweep++;
-			if (sweep >= m_hunkcount)
-				break;
-			hunknum = sweep++;
-		}
-
-		std::atomic<uint8_t> &state = m_preload_state[hunknum];
-		uint8_t expected = PRELOAD_EMPTY;
-		if (!state.compare_exchange_strong(expected, PRELOAD_BUSY, std::memory_order_acquire))
-			continue; // being loaded on demand right now
-
-		std::error_condition const err = source.read_hunk_internal(hunknum, &m_preload[uint64_t(hunknum) * m_hunkbytes]);
-		if (err)
-		{
-			// leave it for on-demand loading and carry on
-			state.store(PRELOAD_EMPTY, std::memory_order_release);
-			continue;
-		}
-		state.store(PRELOAD_READY, std::memory_order_release);
-		loaded++;
-		if (following)
-			readahead++;
 	}
 
-	if (!m_preload_stop.load(std::memory_order_relaxed))
+	// the last thread out reports
+	if ((m_preload_active.fetch_sub(1, std::memory_order_acq_rel) == 1) && !m_preload_stop.load(std::memory_order_relaxed))
 	{
-		std::printf("chd: background preload finished in %.0f ms (%u hunks by preload thread incl. %u read ahead of the game, %u on demand)\n",
-				nxperf::ticks_to_ms(nxperf::ticks() - start), loaded, readahead, m_hunkcount - loaded);
+		uint32_t const loaded = m_preload_loaded.load();
+		std::printf("chd: background preload finished in %.0f ms (%u hunks by preload threads incl. %u read ahead of the game, %u on demand)\n",
+				nxperf::ticks_to_ms(nxperf::ticks() - m_preload_start), loaded, m_preload_readahead.load(), m_hunkcount - loaded);
 		std::fflush(stdout);
 	}
 }
 
 void chd_file::stop_preload()
 {
-	if (m_preload_thread.joinable())
+	m_preload_stop = true;
+	for (std::thread &thread : m_preload_threads)
 	{
-		m_preload_stop = true;
-		m_preload_thread.join();
+		if (thread.joinable())
+			thread.join();
 	}
+	m_preload_active = 0;
 }
 #endif
 

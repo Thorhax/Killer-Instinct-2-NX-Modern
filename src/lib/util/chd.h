@@ -454,13 +454,20 @@ private:
 	enum : uint8_t { PRELOAD_EMPTY = 0, PRELOAD_BUSY = 1, PRELOAD_READY = 2 };
 	std::unique_ptr<uint8_t []> m_preload;
 	std::unique_ptr<std::atomic<uint8_t> []> m_preload_state;
-	std::thread m_preload_thread;
+	static constexpr unsigned PRELOAD_THREADS = 2;             // one each on cores 1 and 2
+	std::thread m_preload_threads[PRELOAD_THREADS];
 	std::atomic<bool> m_preload_stop{ false };
-	std::atomic<uint32_t> m_preload_hint{ ~uint32_t(0) }; // where the emulation last missed; preload reads ahead from here
+	std::atomic<uint32_t> m_preload_hint{ ~uint32_t(0) };      // where the emulation last missed; preload reads ahead from here
+	std::atomic<uint32_t> m_preload_ahead{ ~uint32_t(0) };     // next hunk to read ahead (shared by the preload threads)
+	std::atomic<uint32_t> m_preload_sweep{ 0 };                // next hunk of the front-to-back sweep
+	std::atomic<uint32_t> m_preload_loaded{ 0 };
+	std::atomic<uint32_t> m_preload_readahead{ 0 };
+	std::atomic<uint32_t> m_preload_active{ 0 };
+	uint64_t m_preload_start = 0;
 	std::string m_path;             // filename, so the preload thread can open its own handle
 	bool m_no_preload = false;      // set on the preload thread's private instance
 	void start_preload();
-	void preload_worker();
+	void preload_worker(unsigned index);
 	void stop_preload();
 #endif
 };

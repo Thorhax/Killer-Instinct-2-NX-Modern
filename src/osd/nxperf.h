@@ -61,6 +61,7 @@ inline counter drc_compile;   // MIPS3 block compiles
 inline counter disk_read;     // CHD hunk reads served from file (decompress/SD)
 inline counter disk_hit;      // CHD hunk reads served from RAM
 inline counter disk_wait;     // CHD hunk reads that waited for the preload thread to finish that hunk
+inline counter ignored;       // work that shouldn't show up in the emulation-thread stats
 inline counter audio_short;   // audio callbacks that found too few samples (total = samples missing)
 inline counter tex_upload;    // SDL texture data uploads (lock/update + copy)
 inline counter gpu_present;   // SDL_RenderPresent
@@ -78,11 +79,11 @@ void mem_stats(uint64_t &used, uint64_t &heap, uint64_t &borrowed, uint64_t &ipc
 // Registered by the Switch OSD layer at startup; moves the calling thread off
 // the emulation core at low priority.  A pointer rather than a function so
 // lib/util (CHD preload thread) needs no link dependency on the OSD.
-inline void (*background_thread_hook)() noexcept = nullptr;
-inline void set_background_thread() noexcept
+inline void (*background_thread_hook)(int preferred_core) noexcept = nullptr;
+inline void set_background_thread(int preferred_core = 2) noexcept
 {
 	if (background_thread_hook)
-		background_thread_hook();
+		background_thread_hook(preferred_core);
 }
 
 // seconds east of UTC for the console's time zone, so log lines can be

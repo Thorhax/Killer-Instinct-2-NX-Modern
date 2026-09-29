@@ -110,11 +110,11 @@ void nxperf::mem_stats(uint64_t &used, uint64_t &heap, uint64_t &borrowed, uint6
 	}
 }
 
-static void nx_background_thread() noexcept
+static void nx_background_thread(int preferred_core) noexcept
 {
 	// cores 1/2 only (core 0 runs the emulation), below the emulation (0x2C)
 	// and audio (0x2B) threads so it only uses otherwise idle time
-	svcSetThreadCoreMask(CUR_THREAD_HANDLE, 2, (1 << 1) | (1 << 2));
+	svcSetThreadCoreMask(CUR_THREAD_HANDLE, (preferred_core == 1) ? 1 : 2, (1 << 1) | (1 << 2));
 	svcSetThreadPriority(CUR_THREAD_HANDLE, 0x30);
 }
 
