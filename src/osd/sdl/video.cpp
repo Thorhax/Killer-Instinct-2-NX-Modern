@@ -163,6 +163,8 @@ struct nx_perf_report
 		nxperf::drc_compile.take(dc, dt, dw);
 		nxperf::disk_read.take(rc, rt, rw);
 		nxperf::disk_hit.take(hc, ht, hw);
+		uint64_t wc, wt, ww;
+		nxperf::disk_wait.take(wc, wt, ww);
 		nxperf::audio_short.take(ac, at, aw);
 		uint64_t uc, ut, uw, pc, pt, pw, fc, ft, fw;
 		nxperf::tex_upload.take(uc, ut, uw);
@@ -180,7 +182,7 @@ struct nx_perf_report
 		std::printf("perf %02d:%02d:%02d t=%us speed=%.1f%% skip=%d frames=%u drawn=%u worst_frame=%.1fms"
 				" | render %.1fms (max %.1f)"
 				" | drc %llu blk %.1fms (max %.1f)"
-				" | disk ram %llu %.1fms, file %llu %.1fms (max %.1f)"
+				" | disk ram %llu %.1fms, wait %llu %.1fms (max %.1f), file %llu %.1fms (max %.1f)"
 				" | audio short %llu (%llu samples)"
 				" | upload %.1fms (max %.1f) present %.1fms (max %.1f) gpu %.1fms (max %.1f) sdlfail %llu tex %lld/%llu"
 				" | mem used %lluMB malloc %lluMB borrowed %lluMB ipc %lluMB dev %lluMB\n",
@@ -189,6 +191,7 @@ struct nx_perf_report
 				nxperf::ticks_to_ms(render_total), nxperf::ticks_to_ms(render_worst),
 				(unsigned long long)dc, nxperf::ticks_to_ms(dt), nxperf::ticks_to_ms(dw),
 				(unsigned long long)hc, nxperf::ticks_to_ms(ht),
+				(unsigned long long)wc, nxperf::ticks_to_ms(wt), nxperf::ticks_to_ms(ww),
 				(unsigned long long)rc, nxperf::ticks_to_ms(rt), nxperf::ticks_to_ms(rw),
 				(unsigned long long)ac, (unsigned long long)at,
 				nxperf::ticks_to_ms(ut), nxperf::ticks_to_ms(uw), nxperf::ticks_to_ms(pt), nxperf::ticks_to_ms(pw),

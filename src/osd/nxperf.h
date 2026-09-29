@@ -60,6 +60,7 @@ struct counter
 inline counter drc_compile;   // MIPS3 block compiles
 inline counter disk_read;     // CHD hunk reads served from file (decompress/SD)
 inline counter disk_hit;      // CHD hunk reads served from RAM
+inline counter disk_wait;     // CHD hunk reads that waited for the preload thread to finish that hunk
 inline counter audio_short;   // audio callbacks that found too few samples (total = samples missing)
 inline counter tex_upload;    // SDL texture data uploads (lock/update + copy)
 inline counter gpu_present;   // SDL_RenderPresent

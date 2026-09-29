@@ -1057,12 +1057,33 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 			return std::error_condition();
 		}
 
-		nxperf::scope nxperf_scope(nxperf::disk_read);
-
 		// games load data in long sequential runs: have the preload thread
 		// jump here and read ahead so the rest of this run is ready in RAM
 		m_preload_hint.store(hunknum + 1, std::memory_order_release);
 
+		if (st == PRELOAD_BUSY)
+		{
+			// The preload thread is decompressing this hunk right now (it
+			// reads ahead right at our position).  Waiting for it costs at
+			// most one hunk's decompression; doing it again ourselves costs a
+			// full one.  Give up after 5 ms and read it directly.
+			nxperf::scope nxperf_scope(nxperf::disk_wait);
+			uint64_t const deadline = nxperf::ticks() + (nxperf::TICKS_PER_SEC / 200);
+			do
+			{
+				std::this_thread::yield();
+				st = state.load(std::memory_order_acquire);
+			}
+			while ((st == PRELOAD_BUSY) && (nxperf::ticks() < deadline));
+
+			if (st == PRELOAD_READY)
+			{
+				memcpy(buffer, slot, m_hunkbytes);
+				return std::error_condition();
+			}
+		}
+
+		nxperf::scope nxperf_scope(nxperf::disk_read);
 		if ((st == PRELOAD_EMPTY) && state.compare_exchange_strong(st, PRELOAD_BUSY, std::memory_order_acquire))
 		{
 			// not loaded yet: decompress it ourselves and keep it
@@ -1077,8 +1098,8 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 			return std::error_condition();
 		}
 
-		// the preload thread is working on this hunk right now; read it
-		// directly rather than wait (the slot is not ours to touch)
+		// the preload thread is still on this hunk (or just took it); read it
+		// directly (the slot is not ours to touch)
 		return read_hunk_internal(hunknum, buffer);
 	}
 #endif
